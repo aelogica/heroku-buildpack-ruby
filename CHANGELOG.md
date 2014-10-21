@@ -1,5 +1,7 @@
 ## Master
 
+* Better cedar14 Ruby install error messages
+
 ## v127 (9/18/2014)
 
 * rbx is now stack aware
