@@ -21,6 +21,9 @@ class LanguagePack::Ruby < LanguagePack::Base
   DEFAULT_RUBY_VERSION = "ruby-2.0.0"
   RBX_BASE_URL         = "http://binaries.rubini.us/heroku"
   NODE_BP_PATH         = "vendor/node/bin"
+  SQLITE_VERSION       = "3080700"
+  SQLITE_PATH          = "sqlite-autoconf-#{SQLITE_VERSION}"
+  MY_VENDOR_URL        = "http://appexpress.s3.amazonaws.com"
 
   # detects if this is a valid Ruby app
   # @return [Boolean] true if it's a Ruby app
@@ -456,6 +459,16 @@ WARNING
     end
   end
 
+  # install sqlite into the LP to be referenced for psych compilation
+  # @param [String] tmpdir to store the sqlite files
+  def install_sqlite(dir)
+    FileUtils.mkdir_p dir
+    Dir.chdir(dir) do |dir|
+      puts "curl #{MY_VENDOR_URL}/#{SQLITE_PATH}.tar.gz -s -o - | tar xzf -  2>&1"
+      run("curl #{MY_VENDOR_URL}/#{SQLITE_PATH}.tar.gz -s -o - | tar xzf -  2>&1")
+    end
+  end
+
   # remove `vendor/bundle` that comes from the git repo
   # in case there are native ext.
   # users should be using `bundle pack` instead.
@@ -509,11 +522,30 @@ WARNING
         bundle_time    = nil
         Dir.mktmpdir("libyaml-") do |tmpdir|
           libyaml_dir = "#{tmpdir}/#{LIBYAML_PATH}"
+          sqlite_dir = "#{tmpdir}/#{SQLITE_PATH}"
           install_libyaml(libyaml_dir)
+
+          install_sqlite(sqlite_dir)
+
+          if File.exist? "#{sqlite_dir}/#{SQLITE_PATH}/"
+            puts "folder exists"
+          else
+            puts "folder missing"
+          end
+
+          if File.exist? "#{sqlite_dir}/#{SQLITE_PATH}/sqlite3.h"
+            puts "sqlite3.h exists"
+          else
+            puts "sqlite3.h missing"
+          end
 
           # need to setup compile environment for the psych gem
           yaml_include   = File.expand_path("#{libyaml_dir}/include").shellescape
           yaml_lib       = File.expand_path("#{libyaml_dir}/lib").shellescape
+
+          sqlite_include = File.expand_path("#{sqlite_dir}/include")
+          sqlite_lib = File.expand_path("#{sqlite_dir}/lib")
+
           pwd            = Dir.pwd
           bundler_path   = "#{pwd}/#{slug_vendor_base}/gems/#{BUNDLER_GEM_PATH}/lib"
           # we need to set BUNDLE_CONFIG and BUNDLE_GEMFILE for
@@ -523,11 +555,16 @@ WARNING
             "BUNDLE_CONFIG"                 => "#{pwd}/.bundle/config",
             "CPATH"                         => noshellescape("#{yaml_include}:$CPATH"),
             "CPPATH"                        => noshellescape("#{yaml_include}:$CPPATH"),
-            "LIBRARY_PATH"                  => noshellescape("#{yaml_lib}:$LIBRARY_PATH"),
+            "LIBRARY_PATH"                  => noshellescape("#{yaml_lib}:#{sqlite_lib}:$LIBRARY_PATH"),
             "RUBYOPT"                       => syck_hack,
             "NOKOGIRI_USE_SYSTEM_LIBRARIES" => "true"
           }
           env_vars["BUNDLER_LIB_PATH"] = "#{bundler_path}" if ruby_version.ruby_version == "1.8.7"
+
+          sqlite_command = "gem install sqlite3 -- --with-sqlite3-dir=#{sqlite_dir}/#{SQLITE_PATH}/"
+          puts "Running: #{sqlite_command}"
+          bundler_output << pipe(sqlite_command)
+
           puts "Running: #{bundle_command}"
           instrument "ruby.bundle_install" do
             bundle_time = Benchmark.realtime do
@@ -556,16 +593,6 @@ WARNING
         else
           log "bundle", :status => "failure"
           error_message = "Failed to install gems via Bundler."
-          puts "Bundler Output: #{bundler_output}"
-          if bundler_output.match(/An error occurred while installing sqlite3/)
-            error_message += <<ERROR
-
-
-Detected sqlite3 gem which is not supported on Heroku.
-https://devcenter.heroku.com/articles/sqlite3
-ERROR
-          end
-
           error error_message
         end
       end
